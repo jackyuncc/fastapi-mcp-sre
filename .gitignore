@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.DS_Store
+.env
+.idea/
+.vscode/
+*.pyc
+*.pyo
+*.log
+
+# uv / python build artifacts
+.python-version
+build/
+dist/
+*.egg-info/

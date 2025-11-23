@@ -1,0 +1,16 @@
+{
+  "orders-service": {
+    "p99_latency_ms": 180,
+    "error_rate": 0.012,
+    "cpu_utilization": 0.72,
+    "traffic_rps": 340,
+    "last_updated": "2024-05-11T10:25:00Z"
+  },
+  "payments-service": {
+    "p99_latency_ms": 240,
+    "error_rate": 0.021,
+    "cpu_utilization": 0.81,
+    "traffic_rps": 210,
+    "last_updated": "2024-05-11T10:25:00Z"
+  }
+}

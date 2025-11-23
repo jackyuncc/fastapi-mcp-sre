@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OnDuty AI Assistant PoC</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <p class="eyebrow">PoC</p>
+        <h1>OnDuty AI Assistant</h1>
+        <p class="lead">Grafana MCP + FastAPI MCP wired into a chat-style surface for on-call triage.</p>
+      </div>
+      <div class="pill" id="service-pill">Loading services…</div>
+    </header>
+
+    <main>
+      <section class="panel chat">
+        <div class="chat-log" id="chat-log"></div>
+        <form id="chat-form">
+          <input type="text" id="chat-input" placeholder="Ask about latency, incidents, who is on-call…" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Active incidents</h2>
+          <button class="ghost" id="refresh-incidents">Refresh</button>
+        </div>
+        <div id="incidents"></div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

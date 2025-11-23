@@ -1,0 +1,18 @@
+[
+  {
+    "id": "INC-1203",
+    "service": "orders-service",
+    "severity": "high",
+    "status": "acknowledged",
+    "summary": "p99 latency above SLO for 10 minutes",
+    "runbook": "Check recent deployments, inspect Grafana dashboard orders-latency, restart pods if needed."
+  },
+  {
+    "id": "INC-1188",
+    "service": "payments-service",
+    "severity": "medium",
+    "status": "acknowledged",
+    "summary": "Increasing error rate on payment callbacks",
+    "runbook": "Verify upstream provider status, check retry queue depth, clear stuck jobs."
+  }
+]

@@ -1,0 +1,13 @@
+{
+  "nodes": [
+    { "name": "node-a", "status": "Ready", "cpu_allocatable": "8", "mem_allocatable_gb": "32" },
+    { "name": "node-b", "status": "Ready", "cpu_allocatable": "8", "mem_allocatable_gb": "32" },
+    { "name": "node-c", "status": "NotReady", "cpu_allocatable": "4", "mem_allocatable_gb": "16" }
+  ],
+  "pods": [
+    { "namespace": "orders", "name": "orders-6f74c9d7c8-abcde", "status": "Running", "restarts": 1, "restart_count": 1, "node": "node-a" },
+    { "namespace": "orders", "name": "orders-6f74c9d7c8-fghij", "status": "CrashLoopBackOff", "restarts": 4, "restart_count": 4, "node": "node-b" },
+    { "namespace": "payments", "name": "payments-7c9f8d9c7d-klmno", "status": "Running", "restarts": 0, "restart_count": 0, "node": "node-b" },
+    { "namespace": "payments", "name": "payments-7c9f8d9c7d-pqrst", "status": "Pending", "restarts": 0, "restart_count": 0, "node": "node-c" }
+  ]
+}
