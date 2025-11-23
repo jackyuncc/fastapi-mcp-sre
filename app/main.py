@@ -10,8 +10,10 @@ from fastapi import APIRouter, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi_mcp import FastApiMCP
+from uuid import uuid4
+from typing import Literal
 
 from .mcp.grafana import GrafanaMCP
 from .mcp.oncall import OnCallMCP
@@ -23,15 +25,91 @@ DATA_DIR = BASE_DIR / "data"
 STATIC_DIR = BASE_DIR / "static"
 
 APP_MODE = os.getenv("APP_MODE", "all").lower()  # all | web | grafana | oncall | k8s
-GRAFANA_MCP_URL = os.getenv("GRAFANA_MCP_URL")  # if set, web calls Grafana MCP remotely
-ONCALL_MCP_URL = os.getenv("ONCALL_MCP_URL")  # if set, web calls Oncall MCP remotely
-K8S_MCP_URL = os.getenv("K8S_MCP_URL")  # if set, web calls K8s MCP remotely
 MCP_HTTP_TIMEOUT = float(os.getenv("MCP_HTTP_TIMEOUT", "8"))
+
+
+class MCPSettings(BaseModel):
+    grafana_url: Optional[str] = Field(
+        default=os.getenv("GRAFANA_MCP_URL"),
+        description="Base URL for Grafana MCP (e.g. http://localhost:8011/api/mcp/grafana)",
+    )
+    oncall_url: Optional[str] = Field(
+        default=os.getenv("ONCALL_MCP_URL"),
+        description="Base URL for Oncall MCP (e.g. http://localhost:8012/api/mcp/oncall)",
+    )
+    k8s_url: Optional[str] = Field(
+        default=os.getenv("K8S_MCP_URL"),
+        description="Base URL for K8s MCP (e.g. http://localhost:8013/api/mcp/k8s)",
+    )
+    timeout_seconds: float = Field(default=MCP_HTTP_TIMEOUT, ge=1, description="HTTP timeout to MCP endpoints.")
+    enable_grafana: bool = Field(default=True, description="Enable Grafana MCP tool")
+    enable_oncall: bool = Field(default=True, description="Enable Oncall MCP tool")
+    enable_k8s: bool = Field(default=True, description="Enable K8s MCP tool")
+
+
+class MCPEntry(BaseModel):
+    id: str
+    name: str
+    type: Literal["grafana", "oncall", "k8s"]
+    url: str
+    enabled: bool = True
+
+
+class MCPRegistry(BaseModel):
+    entries: list[MCPEntry] = []
+    active: Dict[str, Optional[str]] = {"grafana": None, "oncall": None, "k8s": None}
+    reachable: Dict[str, bool] = {}
+
+    def active_url(self, type_: str) -> Optional[str]:
+        active_id = self.active.get(type_)
+        if not active_id:
+            return None
+        for entry in self.entries:
+            if entry.id == active_id and entry.enabled and entry.type == type_:
+                return entry.url
+        return None
+
+    def upsert(self, name: str, type_: str, url: str, enabled: bool = True) -> MCPEntry:
+        entry = MCPEntry(id=str(uuid4()), name=name, type=type_, url=url, enabled=enabled)
+        self.entries.append(entry)
+        # If no active set for this type, set this one.
+        if not self.active.get(type_):
+            self.active[type_] = entry.id
+        return entry
+
+    def set_active(self, type_: str, entry_id: str) -> bool:
+        exists = any(e.id == entry_id and e.type == type_ for e in self.entries)
+        if exists:
+            self.active[type_] = entry_id
+        return exists
+
+    def remove(self, entry_id: str) -> bool:
+        before = len(self.entries)
+        self.entries = [e for e in self.entries if e.id != entry_id]
+        # Clear active if it pointed to removed.
+        for t, active_id in list(self.active.items()):
+            if active_id == entry_id:
+                self.active[t] = None
+        return len(self.entries) < before
+
+    def mark_reachable(self, entry_id: str, ok: bool) -> None:
+        self.reachable[entry_id] = ok
 
 # Instantiate lightweight MCP facades backed by JSON fixtures (used when running locally).
 grafana_mcp = GrafanaMCP(DATA_DIR / "metrics.json")
 oncall_mcp = OnCallMCP(DATA_DIR / "incidents.json")
 k8s_mcp = K8sMCP(DATA_DIR / "k8s.json")
+mcp_settings = MCPSettings()
+mcp_registry = MCPRegistry()
+session_history: Dict[str, list[Dict[str, Any]]] = {}
+
+# Seed registry from env if provided.
+if os.getenv("GRAFANA_MCP_URL"):
+    mcp_registry.upsert(name="Grafana MCP (env)", type_="grafana", url=os.getenv("GRAFANA_MCP_URL"))
+if os.getenv("ONCALL_MCP_URL"):
+    mcp_registry.upsert(name="Oncall MCP (env)", type_="oncall", url=os.getenv("ONCALL_MCP_URL"))
+if os.getenv("K8S_MCP_URL"):
+    mcp_registry.upsert(name="K8s MCP (env)", type_="k8s", url=os.getenv("K8S_MCP_URL"))
 
 web_router = APIRouter(prefix="/api/web", tags=["web-chat"])
 grafana_router = APIRouter(prefix="/api/mcp/grafana", tags=["grafana-mcp"])
@@ -126,10 +204,27 @@ TOOLS = [
 
 class ChatRequest(BaseModel):
     message: str
+    session_id: Optional[str] = None
 
 
 class AckRequest(BaseModel):
     incident_id: str
+
+
+class MCPUpdateRequest(MCPSettings):
+    pass
+
+
+class MCPRegistryAddRequest(BaseModel):
+    name: str
+    type: Literal["grafana", "oncall", "k8s"]
+    url: str
+    enabled: bool = True
+
+
+class MCPRegistrySelectRequest(BaseModel):
+    type: Literal["grafana", "oncall", "k8s"]
+    entry_id: str
 
 
 @grafana_router.get("/services")
@@ -235,8 +330,12 @@ def chat_llm(req: ChatRequest):
         "Prefer calling tools to ground your answers. Keep responses brief."
     )
 
+    session_id = req.session_id or str(uuid4())
+    history = session_history.get(session_id, [])
+
     messages: list[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
+        *history,
         {"role": "user", "content": req.message},
     ]
 
@@ -246,7 +345,7 @@ def chat_llm(req: ChatRequest):
         response = llm_client.chat.completions.create(
             model=LLM_MODEL,
             messages=messages,
-            tools=TOOLS,
+            tools=_enabled_tools(),
             tool_choice="auto",
         )
         choice = response.choices[0].message
@@ -254,13 +353,17 @@ def chat_llm(req: ChatRequest):
 
         if not tool_calls:
             reply = choice.content or "No response from model."
-            return {
+            reply_obj = {
                 "reply": reply,
                 "service": state.get("service"),
                 "grafana": state.get("grafana"),
                 "incidents": state.get("incidents"),
                 "called_tools": state.get("called_tools"),
+                "session_id": session_id,
             }
+            # Store trimmed history (user + assistant turns only).
+            _persist_history(session_id, history, req.message, reply)
+            return reply_obj
 
         messages.append(
             {
@@ -281,13 +384,16 @@ def chat_llm(req: ChatRequest):
             messages.append({"role": "tool", "tool_call_id": call.id, "content": json.dumps(result)})
 
     # Fallback if the model never returned a final message.
-    return {
+    reply_obj = {
         "reply": "LLM did not return a final answer after tool calls.",
         "service": state.get("service"),
         "grafana": state.get("grafana"),
         "incidents": state.get("incidents"),
         "called_tools": state.get("called_tools"),
+        "session_id": session_id,
     }
+    _persist_history(session_id, history, req.message, reply_obj["reply"])
+    return reply_obj
 
 
 # Legacy chat endpoints retained for the frontend.
@@ -301,13 +407,67 @@ def chat_llm_legacy(req: ChatRequest):
     return chat_llm(req)
 
 
+@web_router.get("/mcp")
+def get_mcp_settings() -> Dict[str, Any]:
+    return mcp_settings.model_dump()
+
+
+@web_router.post("/mcp")
+def update_mcp_settings(req: MCPUpdateRequest) -> Dict[str, Any]:
+    global mcp_settings
+    mcp_settings = MCPSettings(**req.model_dump())
+    return mcp_settings.model_dump()
+
+
+@web_router.get("/listmcp")
+def list_mcp_settings() -> Dict[str, Any]:
+    return {
+        "settings": mcp_settings.model_dump(),
+        "registry": mcp_registry.model_dump(),
+    }
+
+
+@web_router.post("/mcp/registry")
+def add_mcp_registry(req: MCPRegistryAddRequest) -> Dict[str, Any]:
+    entry = mcp_registry.upsert(req.name, req.type, req.url, req.enabled)
+    return {"entry": entry, "registry": mcp_registry.model_dump()}
+
+
+@web_router.post("/mcp/registry/select")
+def select_mcp_registry(req: MCPRegistrySelectRequest) -> Dict[str, Any]:
+    ok = mcp_registry.set_active(req.type, req.entry_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="entry not found for type")
+    return {"active": mcp_registry.active}
+
+
+@web_router.delete("/mcp/registry/{entry_id}")
+def delete_mcp_registry(entry_id: str) -> Dict[str, Any]:
+    removed = mcp_registry.remove(entry_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="entry not found")
+    return {"registry": mcp_registry.model_dump()}
+
+
+def _enabled_tools() -> list[Dict[str, Any]]:
+    tools = []
+    if mcp_settings.enable_grafana:
+        tools.append(TOOLS[0])
+    if mcp_settings.enable_oncall:
+        tools.extend([TOOLS[1], TOOLS[2]])
+    if mcp_settings.enable_k8s:
+        tools.extend([TOOLS[3], TOOLS[4], TOOLS[5]])
+    return tools
+
+
 def _execute_tool(name: str, args: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any] | list[Dict[str, Any]]:
     state["called_tools"] = state.get("called_tools", [])
     state["called_tools"].append(name)
 
     def _remote_call(method: str, url: str, *, params: Dict[str, Any] | None = None, json_body: Dict[str, Any] | None = None):
+        print(f"[mcp-call] remote {method.upper()} {url} params={params} body={json_body}")
         try:
-            resp = httpx.request(method, url, params=params, json=json_body, timeout=MCP_HTTP_TIMEOUT)
+            resp = httpx.request(method, url, params=params, json=json_body, timeout=mcp_settings.timeout_seconds)
             resp.raise_for_status()
             return resp.json()
         except Exception as exc:  # noqa: BLE001
@@ -317,8 +477,11 @@ def _execute_tool(name: str, args: Dict[str, Any], state: Dict[str, Any]) -> Dic
         service = args.get("service")
         if not service:
             return {"error": "service required"}
-        if GRAFANA_MCP_URL:
-            url = f"{GRAFANA_MCP_URL.rstrip('/')}/{service}"
+        grafana_url = mcp_registry.active_url("grafana")
+        if mcp_settings.grafana_url:  # backward compat direct field
+            grafana_url = mcp_settings.grafana_url
+        if grafana_url:
+            url = f"{grafana_url.rstrip('/')}/{service}"
             data = _remote_call("GET", url)
         else:
             data = grafana_mcp.query_health(service)
@@ -330,8 +493,11 @@ def _execute_tool(name: str, args: Dict[str, Any], state: Dict[str, Any]) -> Dic
 
     if name == "list_incidents":
         service = args.get("service")
-        if ONCALL_MCP_URL:
-            url = f"{ONCALL_MCP_URL.rstrip('/')}/incidents"
+        oncall_url = mcp_registry.active_url("oncall")
+        if mcp_settings.oncall_url:
+            oncall_url = mcp_settings.oncall_url
+        if oncall_url:
+            url = f"{oncall_url.rstrip('/')}/incidents"
             incidents = _remote_call("GET", url, params={"service": service} if service else None)
         else:
             incidents = oncall_mcp.active_incidents(service)
@@ -344,16 +510,22 @@ def _execute_tool(name: str, args: Dict[str, Any], state: Dict[str, Any]) -> Dic
         incident_id = args.get("incident_id")
         if not incident_id:
             return {"error": "incident_id required"}
-        if ONCALL_MCP_URL:
-            url = f"{ONCALL_MCP_URL.rstrip('/')}/incidents/ack"
+        oncall_url = mcp_registry.active_url("oncall")
+        if mcp_settings.oncall_url:
+            oncall_url = mcp_settings.oncall_url
+        if oncall_url:
+            url = f"{oncall_url.rstrip('/')}/incidents/ack"
             updated = _remote_call("POST", url, json_body={"incident_id": incident_id})
             return updated
         updated = oncall_mcp.acknowledge(incident_id)
         return updated or {"error": "incident not found"}
 
     if name == "k8s_overview":
-        if K8S_MCP_URL:
-            url = f"{K8S_MCP_URL.rstrip('/')}/overview"
+        k8s_url = mcp_registry.active_url("k8s")
+        if mcp_settings.k8s_url:
+            k8s_url = mcp_settings.k8s_url
+        if k8s_url:
+            url = f"{k8s_url.rstrip('/')}/overview"
             overview = _remote_call("GET", url)
         else:
             overview = k8s_mcp.cluster_overview()
@@ -362,8 +534,11 @@ def _execute_tool(name: str, args: Dict[str, Any], state: Dict[str, Any]) -> Dic
 
     if name == "list_pods":
         namespace = args.get("namespace")
-        if K8S_MCP_URL:
-            url = f"{K8S_MCP_URL.rstrip('/')}/pods"
+        k8s_url = mcp_registry.active_url("k8s")
+        if mcp_settings.k8s_url:
+            k8s_url = mcp_settings.k8s_url
+        if k8s_url:
+            url = f"{k8s_url.rstrip('/')}/pods"
             pods = _remote_call("GET", url, params={"namespace": namespace} if namespace else None)
         else:
             pods = k8s_mcp.list_pods(namespace)
@@ -375,14 +550,25 @@ def _execute_tool(name: str, args: Dict[str, Any], state: Dict[str, Any]) -> Dic
         name_arg = args.get("name")
         if not namespace or not name_arg:
             return {"error": "namespace and name required"}
-        if K8S_MCP_URL:
-            url = f"{K8S_MCP_URL.rstrip('/')}/pods/restart"
+        k8s_url = mcp_registry.active_url("k8s")
+        if mcp_settings.k8s_url:
+            k8s_url = mcp_settings.k8s_url
+        if k8s_url:
+            url = f"{k8s_url.rstrip('/')}/pods/restart"
             pod = _remote_call("POST", url, json_body={"namespace": namespace, "name": name_arg})
         else:
             pod = k8s_mcp.restart_pod(namespace, name_arg)
         return pod or {"error": "pod not found"}
 
     return {"error": f"unknown tool {name}"}
+
+
+def _persist_history(session_id: str, history: list[Dict[str, Any]], user_msg: str, assistant_msg: str) -> None:
+    # Keep only user/assistant turns to bound size.
+    new_history = [m for m in history if m.get("role") in {"user", "assistant"}]
+    new_history.append({"role": "user", "content": user_msg})
+    new_history.append({"role": "assistant", "content": assistant_msg})
+    session_history[session_id] = new_history[-12:]
 
 
 # Serve static PoC frontend and include routers based on APP_MODE.

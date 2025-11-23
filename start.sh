@@ -10,6 +10,12 @@ set -euo pipefail
 # Single-instance overrides: HOST, PORT (defaults depend on mode)
 # Multi-instance overrides: GRAFANA_HOST/PORT, ONCALL_HOST/PORT, K8S_HOST/PORT, WEB_HOST/PORT
 
+export OPENAI_API_KEY=
+export OPENAI_MODEL=gpt-5
+export OPENAI_BASE_URL=https://api.openai.com/v1/
+
+
+
 set -euo pipefail
 cd "$(dirname "$0")"
 

@@ -22,8 +22,13 @@
         <div class="chat-log" id="chat-log"></div>
         <form id="chat-form">
           <input type="text" id="chat-input" placeholder="Ask about latency, incidents, who is on-call…" autocomplete="off" />
+          <input type="hidden" id="session-id" />
           <button type="submit">Send</button>
         </form>
+        <div class="session-row">
+          <span id="session-label" class="muted small"></span>
+          <button class="ghost" id="new-session">New session</button>
+        </div>
       </section>
 
       <section class="panel">
@@ -32,6 +37,41 @@
           <button class="ghost" id="refresh-incidents">Refresh</button>
         </div>
         <div id="incidents"></div>
+      </section>
+
+      <section class="panel mcp-panel">
+        <div class="panel-header">
+          <h2>MCP endpoints</h2>
+          <div class="mcp-actions">
+            <button class="ghost" id="load-mcp">Reload</button>
+            <button class="ghost" id="list-mcp">List MCP</button>
+            <button class="ghost" id="toggle-mcp">Collapse</button>
+          </div>
+        </div>
+        <div class="mcp-content" id="mcp-content">
+        <div class="mcp-grid">
+          <form id="mcp-form" class="mcp-form">
+            <div class="mcp-row">
+              <input type="text" id="mcp-name" placeholder="Name (e.g. prod-grafana)" required />
+              <select id="mcp-type">
+                <option value="grafana">Grafana</option>
+                <option value="oncall">Oncall</option>
+                <option value="k8s">K8s</option>
+              </select>
+            </div>
+            <div class="mcp-row">
+              <input type="url" id="mcp-url" placeholder="http://127.0.0.1:8011/api/mcp/grafana" required />
+              <input type="number" id="mcp-timeout" min="1" step="0.5" placeholder="8" title="Timeout (seconds)" />
+              <button type="submit">Add</button>
+            </div>
+            <p class="muted small">Add servers via URL; pick one active per type below.</p>
+            <div class="mcp-buttons">
+              <span id="mcp-status" class="muted">Not saved</span>
+            </div>
+          </form>
+          <div class="mcp-list" id="mcp-list"></div>
+        </div>
+        </div>
       </section>
     </main>
   </div>
